@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Morse Defense</title>
+<style>
+  :root { --bg:#05070d; --panel:#0d1220; --text:#cfe3ff; --muted:#6f82a3; --accent:#ffb347; --line:#1c2640; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+    font-family:ui-monospace, Consolas, "Cascadia Mono", monospace; overflow:hidden; }
+  body { display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:8px; padding:6px 12px; background:var(--panel);
+    border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0 10px 0 0; letter-spacing:3px; color:var(--accent); }
+  header label { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; }
+  header button, header select { background:#162038; color:var(--text); border:1px solid #2a3960;
+    border-radius:4px; padding:4px 8px; font:inherit; font-size:12px; cursor:pointer; }
+  header button:hover, header select:hover { border-color:#4a64a0; }
+  header .spacer { flex:1; }
+  header .keys { font-size:11px; color:var(--muted); }
+  #wrap { flex:1; display:flex; align-items:center; justify-content:center; min-height:0; }
+  canvas { display:block; background:#04060b; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MORSE DEFENSE</h1>
+  <button id="btnPause">Pause</button>
+  <label>Hints
+    <select id="selHints">
+      <option value="off">Off</option>
+      <option value="missed">After a miss</option>
+      <option value="always">Always</option>
+    </select>
+  </label>
+  <label>Char speed
+    <select id="selWpm">
+      <option>15</option><option>18</option><option>20</option><option>22</option><option>25</option><option>30</option>
+    </select> WPM
+  </label>
+  <label>Tone
+    <select id="selFreq">
+      <option>500</option><option>550</option><option>600</option><option>650</option><option>700</option><option>800</option>
+    </select> Hz
+  </label>
+  <button id="btnSfx">SFX: on</button>
+  <button id="btnReset">Reset progress</button>
+  <span class="spacer"></span>
+  <span class="keys">Type = fire · Space = replay · Backspace = drop word lock · Esc = pause</span>
+</header>
+<div id="wrap"><canvas id="game"></canvas></div>
+
+<script>
+'use strict';
+
+// ---------------------------------------------------------------- Morse data
+const MORSE = {
+  A:'.-', B:'-...', C:'-.-.', D:'-..', E:'.', F:'..-.', G:'--.', H:'....', I:'..', J:'.---',
+  K:'-.-', L:'.-..', M:'--', N:'-.', O:'---', P:'.--.', Q:'--.-', R:'.-.', S:'...', T:'-',
+  U:'..-', V:'...-', W:'.--', X:'-..-', Y:'-.--', Z:'--..',
+  '0':'-----', '1':'.----', '2':'..---', '3':'...--', '4':'....-',
+  '5':'.....', '6':'-....', '7':'--...', '8':'---..', '9':'----.',
+  '.':'.-.-.-', ',':'--..--', '?':'..--..', '/':'-..-.', '=':'-...-',
+};
+// Koch method order (as used by LCWO.net)
+const KOCH = 'KMURESNAPTLWI.JZ=FOY,VG5/Q92H38B?47C1D60X'.split('');
+const pretty = c => MORSE[c].replace(/\./g, '·').replace(/-/g, '–');
+
+const WORDS = [...new Set((
+  // 2 letters
+  'AM AN AS AT BE BY DO GO HE HI IF IN IS IT ME MY NO OF OK ON OR SO TO UP US WE OX AX ' +
+  // 3 letters
+  'THE AND FOR ARE BUT NOT YOU ALL ANY CAN HAD HER WAS ONE OUR OUT DAY GET HAS HIM HIS HOW MAN NEW NOW OLD ' +
+  'SEE TWO WAY WHO BOY DID ITS LET PUT SAY SHE TOO USE MAP SUN RUN TEN TAP PAN PEN NET KEY SKY SEA EAR EAT ' +
+  'ARM ART RAT CAT DOG CAR BUS RED MUD NUT SET MET PET NAP RAN SAT TEA ATE ASK END SPA TAN PAT MAT SUM NUN ' +
+  'ERA URN RUT PUN EMU ELK INK LAP LIP TIP SIP PIT SIT WIT WIN TIN PIN KIT KIN SKI JAM JET ZAP FUN FIT FIG ' +
+  'FOG LOG DOT HOT HAT BAT BIG BOX FOX SIX YES YET ICE ACE AGE AGO AIR BED BAD BAG BOW COW CUP CUT DRY EGG ' +
+  'EYE FAR FEW FLY GAS GUN HIT HOP JOB JOY LAW LAY LEG LOW MIX OIL OWN PAY PIE RAW ROW SAD SEW TOP TOY TRY ' +
+  'VAN WAR WET ZOO ' +
+  // 4 letters
+  'THAT WITH HAVE THIS WILL YOUR FROM THEY KNOW WANT BEEN GOOD MUCH SOME TIME VERY WHEN COME HERE JUST LIKE ' +
+  'LONG MAKE MANY MORE ONLY OVER SUCH TAKE THAN THEM WELL WERE STAR MARS MOON RUNS SENT NEAT PART TRUE TEAM ' +
+  'MEAT SEAT RENT TURN STUN SPUN PURE SURE NEAR EARN RATE TAPE SNAP TRAP STEP REST NEST PEAK MASK TASK TUNE ' +
+  'MUTE MENU SEEN SEEM TERM STEM PEST PANT RUST MUST SAME NAME TAME MEAN SPAN PEAR TEAR REAP KEEP MEET TREE ' +
+  'SEEK ANTS NUTS PETS MAPS NAPS RAKE SAKE LAKE KITE WAKE WALK TALK TELL SELL LIST LIFT SOFT FAST LAST PAST ' +
+  'EAST WEST WIND MIND KIND FIND BIRD WORD WORK FORM FARM ZERO JUMP JOKE QUIT QUIZ GOLD COLD HOLD BOLD ' +
+  // 5 letters
+  'ABOUT AFTER AGAIN COULD EVERY FIRST FOUND GREAT HOUSE LARGE LEARN NEVER OTHER PLACE PLANT POINT RIGHT ' +
+  'SMALL SOUND SPELL STILL STUDY THEIR THERE THESE THING THINK THREE WATER WHERE WHICH WORLD WOULD WRITE ' +
+  'EARTH SPACE STORM TRAIN STEAM SMART START PASTE ASTER RANKS SNAKE TRUNK SKATE SPARK STARK TRUST STUNT ' +
+  'PRANK SPURN TUNES TAKEN MEANT STERN SPENT PAUSE NURSE PURSE SPARE SMEAR STEAK SKUNK TENSE ORBIT COMET ' +
+  'RADIO LASER ' +
+  // 6+ letters (late game)
+  'PLANET MASTER STREAM SIGNAL METEOR ROCKET SHIELD DEFEND TARGET GALAXY STATION CAPTAIN MISSION CONTACT'
+).split(' ').filter(Boolean))];
+
+// ---------------------------------------------------------------- persistence
+const SAVE_KEY = 'morseDefense.v1';
+function defaultProgress() {
+  return { unlocked: 0, stats: {}, best: 0, settings: { wpm: 20, freq: 600, hints: 'missed', sfx: true } };
+}
+let progress = defaultProgress();
+try {
+  const raw = localStorage.getItem(SAVE_KEY);
+  if (raw) {
+    const p = JSON.parse(raw);
+    progress = Object.assign(defaultProgress(), p);
+    progress.settings = Object.assign(defaultProgress().settings, p.settings || {});
+  }
+} catch (e) { /* storage unavailable: play without saving */ }
+function save() { try { localStorage.setItem(SAVE_KEY, JSON.stringify(progress)); } catch (e) {} }
+const settings = progress.settings;
+
+// ---------------------------------------------------------------- learning model
+const UNLOCK_AT = 0.9;   // every active char must reach this mastery before the next unlocks
+const KNOWN_AT = 0.8;    // counts as "known" for word stages
+const HIT_RATE = 0.2;    // EMA rate toward a hit's quality
+
+function st(c) { return progress.stats[c] || (progress.stats[c] = { m: 0, n: 0, hits: 0, miss: 0 }); }
+function recordHit(c, quality) { const s = st(c); s.n++; s.hits++; s.m += (quality - s.m) * HIT_RATE; save(); }
+function recordMiss(c, keep) { const s = st(c); s.n++; s.miss++; s.m *= keep; save(); }
+function activeChars() { return KOCH.slice(0, progress.unlocked); }
+function readyToUnlock() { return activeChars().every(c => st(c).m >= UNLOCK_AT); }
+function knownCount() { return activeChars().filter(c => st(c).m >= KNOWN_AT).length; }
+function wordStage() { const k = knownCount(); return k >= 28 ? 3 : k >= 20 ? 2 : k >= 10 ? 1 : 0; }
+function levelMult() { return 1 + 0.012 * progress.unlocked; }
+
+function pickChar() {
+  const act = activeChars();
+  const w = act.map(c => { const s = st(c); return 0.3 + (1 - s.m) * 1.5 + (s.n < 8 ? 2.5 : 0); });
+  let r = Math.random() * w.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < act.length; i++) { r -= w[i]; if (r <= 0) return act[i]; }
+  return act[act.length - 1];
+}
+function pickWord(stage) {
+  const allowed = new Set(activeChars());
+  const maxLen = stage === 1 ? 2 : stage === 2 ? 5 : 8;
+  const pool = WORDS.filter(w => w.length <= maxLen && [...w].every(c => allowed.has(c)));
+  if (!pool.length) return null;
+  const used = new Set(asteroids.filter(a => !a.doomed).map(a => a.text[0]));
+  for (let i = 0; i < 6; i++) {           // avoid first-letter clashes so targeting stays unambiguous
+    const w = pool[Math.floor(Math.random() * pool.length)];
+    if (!used.has(w[0])) return w;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------- audio
+let actx = null, master = null;
+function initAudio() {
+  if (actx) return;
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  master = actx.createGain(); master.gain.value = 0.22; master.connect(actx.destination);
+}
+const unit = () => 1.2 / settings.wpm;   // PARIS timing: dit length in seconds
+
+function buildSegments(text, t0) {
+  const u = unit(), segs = [];
+  let t = t0;
+  [...text].forEach((c, ci) => {
+    const code = MORSE[c];
+    for (let i = 0; i < code.length; i++) {
+      const d = code[i] === '.' ? u : 3 * u;
+      segs.push([t, t + d]); t += d;
+      if (i < code.length - 1) t += u;
+    }
+    if (ci < text.length - 1) t += 3 * u;
+  });
+  return { segs, end: t };
+}
+function playSegments(segs) {
+  const osc = actx.createOscillator(), gn = actx.createGain();
+  osc.frequency.value = settings.freq; gn.gain.value = 0;
+  osc.connect(gn); gn.connect(master);
+  const r = 0.005;
+  for (const [s, e] of segs) {
+    gn.gain.setValueAtTime(0, s);
+    gn.gain.linearRampToValueAtTime(1, s + r);
+    gn.gain.setValueAtTime(1, e - r);
+    gn.gain.linearRampToValueAtTime(0, e);
+  }
+  osc.start(segs[0][0]); osc.stop(segs[segs.length - 1][1] + 0.05);
+  return { osc, gn };
+}
+function stopTone(h) {
+  if (!h || !actx) return;
+  const now = actx.currentTime;
+  try {
+    h.gn.gain.cancelScheduledValues(now);
+    h.gn.gain.setValueAtTime(h.gn.gain.value, now);
+    h.gn.gain.linearRampToValueAtTime(0, now + 0.008);
+    h.osc.stop(now + 0.02);
+  } catch (e) {}
+}
+const segOn = (segs, t) => segs.some(([s, e]) => t >= s && t < e);
+
+function sfxNoise(dur, vol, lp) {
+  if (!settings.sfx || !actx) return;
+  const n = Math.floor(actx.sampleRate * dur), b = actx.createBuffer(1, n, actx.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 2);
+  const s = actx.createBufferSource(), f = actx.createBiquadFilter(), gn = actx.createGain();
+  s.buffer = b; f.type = 'lowpass'; f.frequency.value = lp; gn.gain.value = vol;
+  s.connect(f); f.connect(gn); gn.connect(actx.destination); s.start();
+}
+function sfxLaunch() {
+  if (!settings.sfx || !actx) return;
+  const o = actx.createOscillator(), gn = actx.createGain(), t = actx.currentTime;
+  o.type = 'triangle'; o.frequency.setValueAtTime(1100, t); o.frequency.exponentialRampToValueAtTime(220, t + 0.12);
+  gn.gain.setValueAtTime(0.05, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+  o.connect(gn); gn.connect(actx.destination); o.start(t); o.stop(t + 0.15);
+}
+function sfxBuzz() {
+  if (!settings.sfx || !actx) return;
+  const o = actx.createOscillator(), gn = actx.createGain(), t = actx.currentTime;
+  o.type = 'square'; o.frequency.value = 110;
+  gn.gain.setValueAtTime(0.04, t); gn.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+  o.connect(gn); gn.connect(actx.destination); o.start(t); o.stop(t + 0.2);
+}
+
+// ---------------------------------------------------------------- canvas
+const W = 1200, H = 800, GROUND = 740, CANNON = { x: 600, y: GROUND };
+const cv = document.getElementById('game'), g = cv.getContext('2d');
+function resize() {
+  const r = document.getElementById('wrap').getBoundingClientRect();
+  const scale = Math.min(r.width / W, r.height / H), dpr = window.devicePixelRatio || 1;
+  cv.style.width = W * scale + 'px'; cv.style.height = H * scale + 'px';
+  cv.width = Math.round(W * scale * dpr); cv.height = Math.round(H * scale * dpr);
+  g.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+}
+window.addEventListener('resize', resize); resize();
+const FONT = 'ui-monospace, Consolas, "Cascadia Mono", monospace';
+const stars = Array.from({ length: 160 }, () => ({ x: Math.random() * W, y: Math.random() * GROUND, r: Math.random() * 1.3 + 0.2, p: Math.random() * 6 }));
+
+// ---------------------------------------------------------------- game state
+let state = 'title';          // title | play | intro | paused | over
+let pausedFrom = null;
+let asteroids = [], missiles = [], particles = [], rings = [], floats = [];
+let cities = [];
+let score = 0, kills = 0, spawnTimer = 0, shake = 0, locked = null, nextId = 1;
+let curTx = null, nextTxAt = 0, lastTxAst = null;
+let intro = null;
+let aimAngle = -Math.PI / 2;
+const lerp = (a, b, t) => a + (b - a) * t;
+
+function newRound() {
+  stopTone(curTx && curTx.h); curTx = null;
+  asteroids = []; missiles = []; particles = []; rings = []; floats = [];
+  cities = [170, 380, 820, 1030].map(x => ({ x, alive: true }));
+  score = 0; kills = 0; spawnTimer = 1.2; locked = null; lastTxAst = null;
+  nextTxAt = actx ? actx.currentTime + 0.5 : 0;
+  state = 'play';
+}
+
+function spawn() {
+  let text = null;
+  const stage = wordStage();
+  if (stage > 0 && Math.random() < (stage === 1 ? 0.25 : 0.4)) text = pickWord(stage);
+  if (!text) text = pickChar();
+  const avgM = [...text].reduce((a, c) => a + st(c).m, 0) / text.length;
+  // New/weak characters fall slowly (~28s), mastered ones fast (~8s). Words get extra time per letter.
+  const dur = lerp(28, 8, Math.pow(avgM, 1.2)) * (1 + 0.4 * (text.length - 1)) / levelMult();
+  const alive = cities.filter(c => c.alive);
+  const target = alive[Math.floor(Math.random() * alive.length)];
+  const r = text.length === 1 ? 18 : Math.min(46, 16 + 6 * text.length);
+  const n = 11;
+  const verts = Array.from({ length: n }, (_, i) => ({ a: i / n * Math.PI * 2, r: r * (0.78 + Math.random() * 0.3) }));
+  const sx = 60 + Math.random() * (W - 120);
+  asteroids.push({
+    id: nextId++, text, sx, sy: -r - 10, tx: target.x + (Math.random() * 40 - 20), ty: GROUND - 4,
+    x: sx, y: -r - 10, t: 0, dur, r, verts, rot: Math.random() * 6, spin: (Math.random() - 0.5) * 0.8,
+    typed: 0, doomed: false, hint: false, lastTx: -1, txCount: 0, firstTxEnd: null,
+  });
+}
+const maxOnScreen = () => Math.min(5, 1 + Math.ceil(progress.unlocked / 3));
+const live = () => asteroids.filter(a => !a.doomed);
+const frac = a => a.t / a.dur;
+
+// ---- transmission scheduler: exactly one asteroid transmits at a time
+function transmit(a) {
+  const t0 = actx.currentTime + 0.05;
+  const { segs, end } = buildSegments(a.text, t0);
+  curTx = { ast: a, segs, end, h: playSegments(segs) };
+  a.txCount++; lastTxAst = a;
+}
+function cancelTx(a) {
+  if (curTx && (!a || curTx.ast === a)) { stopTone(curTx.h); curTx = null; nextTxAt = actx.currentTime + 0.25; }
+}
+function pickTx() {
+  const c = live().filter(a => a.y > 0);
+  if (!c.length) return null;
+  const fresh = c.filter(a => a.txCount === 0);
+  if (fresh.length) return fresh.sort((a, b) => a.id - b.id)[0];
+  const now = actx.currentTime;
+  return c.sort((a, b) => (now - b.lastTx) * (0.6 + frac(b)) - (now - a.lastTx) * (0.6 + frac(a)))[0];
+}
+function txUpdate() {
+  const now = actx.currentTime;
+  if (curTx) {
+    if (now < curTx.end) return;
+    const a = curTx.ast;
+    a.lastTx = curTx.end;
+    if (a.firstTxEnd == null) a.firstTxEnd = curTx.end;
+    curTx = null; nextTxAt = now + 0.45;
+  }
+  if (state !== 'play' || now < nextTxAt) return;
+  const a = pickTx();
+  if (a) transmit(a);
+}
+
+// ---- intro of a new character (Koch: add one at a time)
+function beginIntro() {
+  const ch = KOCH[progress.unlocked];
+  progress.unlocked++; st(ch); save();
+  cancelTx(); locked = null;
+  intro = { ch, segs: [], end: 0, h: null };
+  playIntro(0.8);
+  state = 'intro';
+}
+function playIntro(delay) {
+  stopTone(intro.h);
+  let t = actx.currentTime + delay, segs = [];
+  for (let i = 0; i < 3; i++) { const b = buildSegments(intro.ch, t); segs = segs.concat(b.segs); t = b.end + 0.9; }
+  intro.segs = segs; intro.end = t - 0.9; intro.h = playSegments(segs);
+}
+
+// ---- firing and impacts
+function quality(a) {
+  if (a.firstTxEnd == null) return curTx && curTx.ast === a ? 1 : 0.5;  // typed before hearing it = guess
+  const rt = actx.currentTime - a.firstTxEnd;
+  return rt <= 3 ? 1 : Math.max(0.7, 1 - (rt - 3) * 0.06);
+}
+function fire(a) {
+  a.doomed = true;
+  if (locked === a) locked = null;
+  cancelTx(a);
+  missiles.push({ sx: CANNON.x, sy: CANNON.y - 22, x: CANNON.x, y: CANNON.y - 22, target: a });
+  aimAngle = Math.atan2(a.y - CANNON.y, a.x - CANNON.x);
+  sfxLaunch();
+}
+function explode(x, y, color, n, big) {
+  for (let i = 0; i < n; i++) {
+    const ang = Math.random() * Math.PI * 2, sp = (big ? 60 : 40) + Math.random() * (big ? 260 : 180);
+    particles.push({ x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 0, max: 0.5 + Math.random() * 0.6, color });
+  }
+  rings.push({ x, y, t: 0, max: big ? 0.7 : 0.45, r: big ? 90 : 55, color });
+}
+function float(text, x, y, color, size = 18, life = 1.4) { floats.push({ text, x, y, color, size, t: 0, life }); }
+
+function destroyAsteroid(a) {
+  asteroids.splice(asteroids.indexOf(a), 1);
+  explode(a.x, a.y, '#ffd27a', 26 + a.text.length * 6, a.text.length > 1);
+  sfxNoise(0.35, 0.18, 1400);
+  const pts = a.text.length === 1 ? 10 : 15 * a.text.length;
+  score += pts; kills++;
+  float(a.text, a.x, a.y - a.r - 8, '#8dffb0', a.text.length > 1 ? 22 : 26);
+  if (kills % 25 === 0) {
+    const dead = cities.find(c => !c.alive);
+    if (dead) { dead.alive = true; float('CITY REBUILT', dead.x, GROUND - 60, '#7fd4ff', 16, 2); }
+  }
+}
+function impact(a) {
+  asteroids.splice(asteroids.indexOf(a), 1);
+  if (locked === a) locked = null;
+  cancelTx(a);
+  if (a.text.length === 1) recordMiss(a.text, 0.5);
+  else [...a.text.slice(a.typed)].forEach(c => recordMiss(c, 0.75));
+  let hit = null, best = 1e9;
+  cities.forEach(c => { if (c.alive && Math.abs(c.x - a.x) < best) { best = Math.abs(c.x - a.x); hit = c; } });
+  if (hit && best < 70) hit.alive = false;
+  explode(a.x, GROUND - 6, '#ff6a4a', 50, true);
+  sfxNoise(0.8, 0.35, 500);
+  shake = 14;
+  const label = a.text.length === 1 ? `${a.text}  ${pretty(a.text)}` : a.text;
+  float(label, a.x, GROUND - 70, '#ff8c7a', 24, 2.4);
+  if (!cities.some(c => c.alive)) gameOver();
+}
+function gameOver() {
+  cancelTx(); state = 'over'; locked = null;
+  if (score > progress.best) { progress.best = score; save(); }
+}
+
+// ---------------------------------------------------------------- input
+function handleChar(c) {
+  if (locked && asteroids.includes(locked) && !locked.doomed) {
+    const exp = locked.text[locked.typed];
+    if (c === exp) {
+      recordHit(c, 1); locked.typed++;
+      if (locked.typed >= locked.text.length) fire(locked);
+    } else {
+      recordMiss(exp, 0.85); locked.hint = true; wrong(c);
+    }
+    return;
+  }
+  locked = null;
+  const cands = live().filter(a => a.text[0] === c && a.y > -a.r).sort((a, b) => frac(b) - frac(a));
+  if (cands.length) {
+    const a = cands[0];
+    recordHit(c, quality(a));
+    if (a.text.length === 1) fire(a);
+    else { a.typed = 1; locked = a; }
+    return;
+  }
+  // No match: blame the signal the player was most likely trying to copy.
+  const blame = lastTxAst && asteroids.includes(lastTxAst) && !lastTxAst.doomed ? lastTxAst
+    : live().sort((a, b) => frac(b) - frac(a))[0];
+  if (blame) { recordMiss(blame.text[blame.typed], 0.85); blame.hint = true; }
+  wrong(c);
+}
+function wrong(c) {
+  float('✗ ' + c, CANNON.x, CANNON.y - 60, '#ff6a6a', 20, 0.9);
+  sfxBuzz();
+}
+
+function togglePause() {
+  if (state === 'paused') { state = pausedFrom; actx && actx.resume(); }
+  else if (state === 'play' || state === 'intro') { pausedFrom = state; state = 'paused'; actx && actx.suspend(); }
+  btnPause.textContent = state === 'paused' ? 'Resume' : 'Pause';
+}
+function startGame() {
+  initAudio(); actx.resume();
+  newRound();
+}
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.length === 1 ? e.key.toUpperCase() : e.key;
+  if (k === ' ' || k === '/' || k === "'" || k === 'Backspace') e.preventDefault();
+
+  if (state === 'title') { if (e.key !== 'Tab') startGame(); return; }
+  if (k === 'Escape') { if (state !== 'over') togglePause(); return; }
+  if (state === 'paused') return;
+  if (state === 'over') { if (k === 'Enter' || k === ' ') newRound(); return; }
+
+  if (state === 'intro') {
+    if (k === ' ') playIntro(0.1);
+    else if (k === intro.ch) {
+      stopTone(intro.h); intro = null; state = 'play'; spawnTimer = 0.8;
+      nextTxAt = actx.currentTime + 0.3;
+    }
+    return;
+  }
+  // play
+  if (k === ' ') {
+    const a = live().filter(a => a.y > 0).sort((a, b) => frac(b) - frac(a))[0];
+    if (a) { cancelTx(); transmit(a); }
+    return;
+  }
+  if (k === 'Backspace') { locked = null; return; }
+  if (MORSE[k] && activeChars().includes(k)) { e.preventDefault(); handleChar(k); }
+});
+cv.addEventListener('pointerdown', () => { if (state === 'title') startGame(); });
+window.addEventListener('blur', () => { if (state === 'play' || state === 'intro') togglePause(); });
+
+// ---- header controls
+const btnPause = document.getElementById('btnPause');
+const selHints = document.getElementById('selHints'), selWpm = document.getElementById('selWpm');
+const selFreq = document.getElementById('selFreq'), btnSfx = document.getElementById('btnSfx');
+selHints.value = settings.hints; selWpm.value = String(settings.wpm); selFreq.value = String(settings.freq);
+btnSfx.textContent = 'SFX: ' + (settings.sfx ? 'on' : 'off');
+btnPause.onclick = () => { btnPause.blur(); if (state !== 'title' && state !== 'over') togglePause(); };
+selHints.onchange = () => { settings.hints = selHints.value; save(); selHints.blur(); };
+selWpm.onchange = () => { settings.wpm = +selWpm.value; save(); selWpm.blur(); };
+selFreq.onchange = () => { settings.freq = +selFreq.value; save(); selFreq.blur(); };
+btnSfx.onclick = () => { settings.sfx = !settings.sfx; btnSfx.textContent = 'SFX: ' + (settings.sfx ? 'on' : 'off'); save(); btnSfx.blur(); };
+document.getElementById('btnReset').onclick = e => {
+  e.target.blur();
+  if (!confirm('Reset all learning progress back to K and M?')) return;
+  const keep = Object.assign({}, settings);
+  progress = defaultProgress(); progress.settings = Object.assign(settings, keep); save();
+  if (intro) { stopTone(intro.h); intro = null; }
+  if (actx) { actx.resume(); newRound(); } else state = 'title';
+};
+
+// ---------------------------------------------------------------- update
+function update(dt) {
+  if (state === 'play') {
+    const wantIntro = progress.unlocked < KOCH.length && (progress.unlocked < 2 || readyToUnlock());
+    if (wantIntro) {
+      if (!asteroids.length && !missiles.length) beginIntro();
+    } else {
+      if (!live().length) spawnTimer = Math.min(spawnTimer, 0.6);
+      spawnTimer -= dt;
+      if (spawnTimer <= 0 && live().length < maxOnScreen()) { spawn(); spawnTimer = 1.8 + Math.random() * 2.2; }
+    }
+    for (const a of [...asteroids]) {
+      a.t += dt; a.rot += a.spin * dt;
+      const f = Math.min(1, frac(a));
+      a.x = lerp(a.sx, a.tx, f); a.y = lerp(a.sy, a.ty, f);
+      if (f >= 1) { if (a.doomed) destroyAsteroid(a); else impact(a); }
+      if (state === 'over') break;
+    }
+    for (const m of [...missiles]) {
+      const a = m.target, dx = a.x - m.x, dy = a.y - m.y, d = Math.hypot(dx, dy), step = 1700 * dt;
+      if (!asteroids.includes(a)) { missiles.splice(missiles.indexOf(m), 1); continue; }
+      if (d <= step + a.r * 0.5) { missiles.splice(missiles.indexOf(m), 1); destroyAsteroid(a); }
+      else { m.x += dx / d * step; m.y += dy / d * step; }
+    }
+  }
+  if (state === 'play' || state === 'intro') txUpdate();
+}
+function updateFx(dt) {
+  for (const p of particles) { p.life += dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.97; p.vy = p.vy * 0.97 + 30 * dt; }
+  particles = particles.filter(p => p.life < p.max);
+  for (const r of rings) r.t += dt; rings = rings.filter(r => r.t < r.max);
+  for (const f of floats) { f.t += dt; f.y -= 22 * dt; } floats = floats.filter(f => f.t < f.life);
+  shake = Math.max(0, shake - 40 * dt);
+}
+
+// ---------------------------------------------------------------- draw
+function text(s, x, y, size, color, align = 'center', weight = '') {
+  g.font = `${weight} ${size}px ${FONT}`; g.fillStyle = color; g.textAlign = align; g.textBaseline = 'middle';
+  g.fillText(s, x, y);
+}
+const masteryColor = (m, a = 1) => `hsla(${Math.round(120 * m)}, 80%, 55%, ${a})`;
+
+function drawBackground(time) {
+  g.fillStyle = '#04060b'; g.fillRect(0, 0, W, H);
+  for (const s of stars) {
+    g.globalAlpha = 0.35 + 0.35 * Math.sin(time * 1.3 + s.p);
+    g.fillStyle = '#cfe3ff'; g.fillRect(s.x, s.y, s.r, s.r);
+  }
+  g.globalAlpha = 1;
+  const gr = g.createLinearGradient(0, GROUND, 0, H);
+  gr.addColorStop(0, '#1c2a1a'); gr.addColorStop(1, '#0b100a');
+  g.fillStyle = gr; g.fillRect(0, GROUND, W, H - GROUND);
+  g.strokeStyle = '#3f6a3a'; g.lineWidth = 2; g.beginPath(); g.moveTo(0, GROUND); g.lineTo(W, GROUND); g.stroke();
+}
+function drawCities() {
+  for (const c of cities) {
+    if (c.alive) {
+      g.fillStyle = '#2d5d8a';
+      [[-26, 14, 18], [-10, 10, 30], [4, 12, 22], [16, 10, 14]].forEach(([dx, w, h]) => g.fillRect(c.x + dx, GROUND - h, w, h));
+      g.fillStyle = '#9fd3ff';
+      for (let i = 0; i < 6; i++) g.fillRect(c.x - 22 + i * 7, GROUND - 8 - (i % 3) * 6, 2, 2);
+      g.strokeStyle = 'rgba(127,212,255,0.35)'; g.beginPath(); g.arc(c.x, GROUND, 36, Math.PI, 0); g.stroke();
+    } else {
+      g.fillStyle = '#3a2a24';
+      for (let i = 0; i < 6; i++) g.fillRect(c.x - 26 + i * 9, GROUND - 4 - (i * 7 % 5), 7, 4 + (i * 7 % 5));
+    }
+  }
+  // cannon
+  g.fillStyle = '#44506a'; g.beginPath(); g.arc(CANNON.x, GROUND, 22, Math.PI, 0); g.fill();
+  g.save(); g.translate(CANNON.x, GROUND - 10); g.rotate(aimAngle);
+  g.fillStyle = '#8ea3c8'; g.fillRect(0, -4, 30, 8); g.restore();
+}
+function drawAsteroid(a, now) {
+  const on = curTx && curTx.ast === a && segOn(curTx.segs, now);
+  const tx = curTx && curTx.ast === a;
+  // trail
+  g.strokeStyle = 'rgba(255,150,70,0.12)'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(a.sx, a.sy); g.lineTo(a.x, a.y); g.stroke();
+  if (on) {
+    const rg = g.createRadialGradient(a.x, a.y, a.r * 0.3, a.x, a.y, a.r * 2.6);
+    rg.addColorStop(0, 'rgba(255,200,90,0.75)'); rg.addColorStop(1, 'rgba(255,160,40,0)');
+    g.fillStyle = rg; g.beginPath(); g.arc(a.x, a.y, a.r * 2.6, 0, Math.PI * 2); g.fill();
+  }
+  if (tx) {
+    g.strokeStyle = 'rgba(255,200,90,0.45)'; g.lineWidth = 1.5; g.setLineDash([4, 5]);
+    g.beginPath(); g.arc(a.x, a.y, a.r + 9, 0, Math.PI * 2); g.stroke(); g.setLineDash([]);
+  }
+  g.save(); g.translate(a.x, a.y); g.rotate(a.rot);
+  g.beginPath();
+  a.verts.forEach((v, i) => { const x = Math.cos(v.a) * v.r, y = Math.sin(v.a) * v.r; i ? g.lineTo(x, y) : g.moveTo(x, y); });
+  g.closePath();
+  g.fillStyle = on ? '#7a5424' : a.doomed ? '#2a2622' : '#3a3228'; g.fill();
+  g.strokeStyle = on ? '#ffd27a' : '#8a7a66'; g.lineWidth = 2; g.stroke();
+  g.fillStyle = 'rgba(0,0,0,0.25)';
+  g.beginPath(); g.arc(a.r * 0.25, -a.r * 0.2, a.r * 0.22, 0, Math.PI * 2); g.fill();
+  g.restore();
+
+  let ly = a.y + a.r + 16;
+  if (a.text.length > 1) {
+    const s = [...a.text].map((c, i) => i < a.typed ? c : '_').join(' ');
+    text(s, a.x, ly, 16, locked === a ? '#7fe8ff' : '#b8c6de', 'center', 'bold'); ly += 18;
+  }
+  const showHint = settings.hints === 'always' || (settings.hints === 'missed' && a.hint);
+  if (showHint && !a.doomed) text(pretty(a.text[a.typed] || a.text[0]), a.x, ly, 16, '#ffcf70', 'center', 'bold');
+  if (locked === a) {
+    const r = a.r + 14; g.strokeStyle = '#7fe8ff'; g.lineWidth = 2;
+    [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(([sx, sy]) => {
+      g.beginPath(); g.moveTo(a.x + sx * r, a.y + sy * (r - 8)); g.lineTo(a.x + sx * r, a.y + sy * r); g.lineTo(a.x + sx * (r - 8), a.y + sy * r); g.stroke();
+    });
+  }
+}
+function drawHUD() {
+  text(`SCORE ${score}`, 16, 22, 18, '#cfe3ff', 'left', 'bold');
+  text(`BEST ${progress.best}`, 16, 44, 13, '#6f82a3', 'left');
+  const stage = ['single characters', '2-letter words', 'words (3–5)', 'long words'][wordStage()];
+  let status;
+  if (progress.unlocked >= KOCH.length) status = 'All characters unlocked';
+  else if (progress.unlocked >= 2) {
+    const weakest = activeChars().filter(c => st(c).m < UNLOCK_AT).length;
+    status = weakest ? `${weakest} char${weakest > 1 ? 's' : ''} below ${UNLOCK_AT * 100}% before next unlock` : 'Next character incoming…';
+  } else status = '';
+  text(`Stage: ${stage}`, W - 16, 22, 14, '#cfe3ff', 'right');
+  text(status, W - 16, 42, 12, '#6f82a3', 'right');
+
+  // Koch strip along the ground
+  const cw = 27, x0 = (W - cw * KOCH.length) / 2 + cw / 2, y = GROUND + 20;
+  KOCH.forEach((c, i) => {
+    const x = x0 + i * cw;
+    if (i < progress.unlocked) {
+      const m = st(c).m;
+      const newest = i === progress.unlocked - 1 && progress.unlocked < KOCH.length;
+      text(c, x, y, 15, newest ? '#ffcf70' : '#e3eeff', 'center', 'bold');
+      g.fillStyle = 'rgba(255,255,255,0.1)'; g.fillRect(x - 10, y + 12, 20, 4);
+      g.fillStyle = masteryColor(m); g.fillRect(x - 10, y + 12, 20 * m, 4);
+      g.fillStyle = 'rgba(255,255,255,0.6)'; g.fillRect(x - 10 + 20 * UNLOCK_AT, y + 11, 1, 6);
+    } else {
+      text(c, x, y, 13, '#2c3850', 'center');
+    }
+  });
+}
+function drawOverlay(title, lines, now) {
+  g.fillStyle = 'rgba(3,5,10,0.78)'; g.fillRect(0, 0, W, GROUND);
+  text(title, W / 2, 250, 48, '#ffb347', 'center', 'bold');
+  lines.forEach((l, i) => text(l[0], W / 2, 320 + i * 30, l[1] || 17, l[2] || '#cfe3ff'));
+}
+function drawIntro(now) {
+  g.fillStyle = 'rgba(3,5,10,0.82)'; g.fillRect(0, 0, W, GROUND);
+  const on = segOn(intro.segs, now);
+  text('NEW CHARACTER', W / 2, 170, 20, '#6f82a3', 'center', 'bold');
+  if (on) {
+    const rg = g.createRadialGradient(W / 2, 290, 20, W / 2, 290, 150);
+    rg.addColorStop(0, 'rgba(255,200,90,0.6)'); rg.addColorStop(1, 'rgba(255,160,40,0)');
+    g.fillStyle = rg; g.beginPath(); g.arc(W / 2, 290, 150, 0, Math.PI * 2); g.fill();
+  }
+  text(intro.ch, W / 2, 290, 120, on ? '#fff3d6' : '#ffb347', 'center', 'bold');
+  text(pretty(intro.ch), W / 2, 400, 44, '#ffcf70', 'center', 'bold');
+  const done = now >= intro.end;
+  text(done ? `Type  ${intro.ch}  to continue` : 'Listen…', W / 2, 480, 20, done ? '#8dffb0' : '#cfe3ff');
+  text('Space = hear it again', W / 2, 515, 14, '#6f82a3');
+  text('Learn the sound as a whole rhythm; try not to count dots and dashes.', W / 2, 560, 14, '#6f82a3');
+}
+
+function draw(time) {
+  const now = actx ? actx.currentTime : 0;
+  g.save();
+  if (shake) g.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  drawBackground(time);
+  drawCities();
+  for (const a of asteroids) drawAsteroid(a, now);
+  for (const m of missiles) {
+    g.strokeStyle = 'rgba(127,232,255,0.6)'; g.lineWidth = 2;
+    g.beginPath(); g.moveTo(m.sx, m.sy); g.lineTo(m.x, m.y); g.stroke();
+    g.fillStyle = '#ffffff'; g.beginPath(); g.arc(m.x, m.y, 3, 0, Math.PI * 2); g.fill();
+  }
+  for (const r of rings) {
+    const f = r.t / r.max; g.strokeStyle = r.color; g.globalAlpha = 1 - f; g.lineWidth = 3;
+    g.beginPath(); g.arc(r.x, r.y, r.r * f, 0, Math.PI * 2); g.stroke();
+  }
+  for (const p of particles) { g.globalAlpha = 1 - p.life / p.max; g.fillStyle = p.color; g.fillRect(p.x, p.y, 2.5, 2.5); }
+  g.globalAlpha = 1;
+  for (const f of floats) { g.globalAlpha = Math.min(1, 2 * (1 - f.t / f.life)); text(f.text, f.x, f.y, f.size, f.color, 'center', 'bold'); }
+  g.globalAlpha = 1;
+  g.restore();
+  drawHUD();
+
+  if (state === 'title') {
+    drawOverlay('MORSE DEFENSE', [
+      ['Asteroids are falling toward the surface, each one transmitting its identity in Morse code.'],
+      ['Decode the signal and type the character to shoot it down.'],
+      ['New characters arrive one at a time (Koch method) and fall slowly while you learn them.', 15, '#6f82a3'],
+      ['Characters you know speed up. Characters you miss slow back down.', 15, '#6f82a3'],
+      [''],
+      [progress.unlocked ? `Progress saved: ${progress.unlocked} of ${KOCH.length} characters unlocked` : 'Starting with K and M', 15, '#8dffb0'],
+      ['Click or press any key to begin', 20, '#ffb347'],
+    ]);
+  } else if (state === 'paused') {
+    drawOverlay('PAUSED', [['Press Esc to resume']]);
+  } else if (state === 'over') {
+    drawOverlay('SURFACE LOST', [
+      [`Score ${score}   ·   Best ${progress.best}`, 20],
+      ['Your learning progress is kept.', 15, '#6f82a3'],
+      ['Press Enter to defend again', 20, '#ffb347'],
+    ]);
+  } else if (state === 'intro' && intro) {
+    drawIntro(now);
+  }
+}
+
+// ---------------------------------------------------------------- loop
+let last = performance.now();
+function frame(t) {
+  const dt = Math.min(0.05, (t - last) / 1000); last = t;
+  if (state === 'play' || state === 'intro') { update(dt); updateFx(dt); }
+  else if (state === 'over') updateFx(dt);
+  draw(t / 1000);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Debug handle for testing from the console, e.g. MD.setMastery('K', 1)
+window.MD = {
+  get progress() { return progress; }, get asteroids() { return asteroids; },
+  setMastery(c, m) { st(c).m = m; st(c).n = Math.max(st(c).n, 10); save(); },
+  masterAll(m = 0.95) { activeChars().forEach(c => this.setMastery(c, m)); },
+  get state() { return state; }, get locked() { return locked; }, get cities() { return cities; },
+  tick(sec) { for (let t = 0; t < sec; t += 1 / 60) { update(1 / 60); updateFx(1 / 60); } draw(performance.now() / 1000); },
+};
+</script>
+</body>
+</html>
